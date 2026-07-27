@@ -1,12 +1,24 @@
 import os
 import time
+import threading
 import requests
 import yfinance as yf
 import pandas as pd
+from flask import Flask
 
-# Proxy obligatorio para cuentas gratuitas de PythonAnywhere
-os.environ['HTTP_PROXY'] = 'http://proxy.server:3128'
-os.environ['HTTPS_PROXY'] = 'http://proxy.server:3128'
+# ==========================================
+# SERVIDOR WEB PARA RENDER & UPTIMEROBOT
+# ==========================================
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖 Bot Multi-Mercado (CL, ES, NQ) funcionando correctamente.", 200
+
+def run_web_server():
+    # Render asigna dinámicamente un puerto a través de la variable de entorno PORT
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
 
 # ==========================================
 # CREDENCIALES DE TELEGRAM
@@ -15,19 +27,15 @@ TELEGRAM_TOKEN = "8904618394:AAHovRZSl_UdzLrgZ9ifCWNEksp5yMtHrew"
 TELEGRAM_CHAT_ID = "1881139096"
 
 def enviar_telegram(mensaje: str):
-    """Envía un mensaje usando el proxy de PythonAnywhere."""
+    """Envía un mensaje a Telegram directamente (sin proxies)."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": mensaje,
         "parse_mode": "Markdown"
     }
-    proxies = {
-        'http': 'http://proxy.server:3128',
-        'https': 'http://proxy.server:3128',
-    }
     try:
-        response = requests.post(url, data=payload, proxies=proxies, timeout=10)
+        response = requests.post(url, data=payload, timeout=10)
         if response.status_code != 200:
             print(f"❌ Error enviando a Telegram: {response.text}")
     except Exception as e:
@@ -57,7 +65,11 @@ def analizar_cl():
         df['bbu'] = df['bbm'] + (std * 2.0)
         df['bbl'] = df['bbm'] - (std * 2.0)
 
-        tr = pd.concat([df['high'] - df['low'], (df['high'] - df['close'].shift()).abs(), (df['low'] - df['close'].shift()).abs()], axis=1).max(axis=1)
+        tr = pd.concat([
+            df['high'] - df['low'], 
+            (df['high'] - df['close'].shift()).abs(), 
+            (df['low'] - df['close'].shift()).abs()
+        ], axis=1).max(axis=1)
         df['atr'] = tr.rolling(14).mean()
 
         precio = float(df['close'].iloc[-1])
@@ -131,9 +143,14 @@ def analizar_ema200(symbol: str, nombre: str):
 # BUCLE PRINCIPAL
 # ==========================================
 if __name__ == "__main__":
+    # 1. Iniciar servidor Flask en segundo plano
+    threading.Thread(target=run_web_server, daemon=True).start()
+    
+    # 2. Notificación de inicio
     print("🤖 Bot Multi-Mercado Activado (CL, ES, NQ).")
-    enviar_telegram("🤖 *Bot Multi-Mercado Activado en la nube.*\nMonitoreando CL, ES y NQ cada 5 minutos...")
+    enviar_telegram("🤖 *Bot Multi-Mercado Activado en Render.*\nMonitoreando CL, ES y NQ cada 5 minutos...")
 
+    # 3. Bucle de análisis continuo
     while True:
         # Evaluamos Petróleo
         analizar_cl()
