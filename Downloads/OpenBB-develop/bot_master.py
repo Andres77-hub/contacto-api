@@ -1,28 +1,30 @@
+import os
 import time
 import requests
 import pandas as pd
 import yfinance as yf
 
 # ==========================================
-# 1. CONFIGURACIÓN INICIAL
+# 1. CONFIGURACIÓN INICIAL Y CREDENCIALES
 # ==========================================
 # Activos a monitorear (E-mini S&P 500 y E-mini Nasdaq)
 TICKERS = ["ES=F", "NQ=F"]
 
-# Periodo de tiempo y temporalidad de velas (ej. "1h", "4h", "1d")
+# Periodo de tiempo y temporalidad de velas
 INTERVALO = "4h"
 TEMPORALIDAD_DATOS = "60d"
 
-# Configuración del Bot de Telegram (Reemplaza con tus credenciales)
-TELEGRAM_BOT_TOKEN = "8904618394:AAHovRZSl_UdzLrgZ9ifCWNEksp5yMtHrew"
-TELEGRAM_CHAT_ID = "1881139096"
+# Lee desde las Variables de Entorno de Render/Servidor.
+# Si no existen en el entorno, usa tus credenciales como respaldo (fallback).
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8904618394:AAHovRZSl_UdzLrgZ9ifCWNEksp5yMtHrew")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "1881139096")
 
 # ==========================================
 # 2. FUNCIONES BÁSICAS
 # ==========================================
 def enviar_mensaje_telegram(mensaje: str):
     """Envía un mensaje de alerta a tu chat de Telegram."""
-    if TELEGRAM_BOT_TOKEN == "TU_BOT_TOKEN_AQUI":
+    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "TU_BOT_TOKEN_AQUI":
         print(f"[ALERTA LOCAL]: {mensaje}")
         return
 
@@ -55,11 +57,11 @@ def analizar_cruce(ticker: str):
     df = calcular_ema_200(df)
 
     # Última vela cerrada (penúltimo registro) y la anterior
-    precio_cierre_anterior = df['Close'].iloc[-3]
-    ema_anterior = df['EMA_200'].iloc[-3]
+    precio_cierre_anterior = float(df['Close'].iloc[-3])
+    ema_anterior = float(df['EMA_200'].iloc[-3])
 
-    precio_cierre_actual = df['Close'].iloc[-2]
-    ema_actual = df['EMA_200'].iloc[-2]
+    precio_cierre_actual = float(df['Close'].iloc[-2])
+    ema_actual = float(df['EMA_200'].iloc[-2])
 
     # Detección de Cruce Alcista (Cierre cruza de abajo hacia arriba)
     if precio_cierre_anterior < ema_anterior and precio_cierre_actual > ema_actual:
@@ -87,9 +89,9 @@ def analizar_cruce(ticker: str):
 # 3. BUCLE PRINCIPAL DE EJECUCIÓN
 # ==========================================
 if __name__ == "__main__":
-    enviar_mensaje_telegram("🤖 *Bot de Trading Iniciado Correctamente en VS Code*")
+    enviar_mensaje_telegram("🤖 *Bot de Trading Iniciado Correctamente*")
     
-    # Bucle infinito para monitoreo periódico (ej. cada 15 minutos)
+    # Bucle de monitoreo cada 15 minutos (900 segundos)
     SEGUNDOS_ESPERA = 900 
     
     while True:
