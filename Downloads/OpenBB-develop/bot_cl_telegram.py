@@ -1,59 +1,113 @@
 import os
 import time
+import threading
 import requests
-import yfinance as yf
 import pandas as pd
-
-# Configurar el proxy obligatorio de PythonAnywhere para cuentas gratuitas
-os.environ['HTTP_PROXY'] = 'http://proxy.server:3128'
-os.environ['HTTPS_PROXY'] = 'http://proxy.server:3128'
+import yfinance as yf
+from flask import Flask
 
 # ==========================================
-# CREDENCIALES DE TELEGRAM
+# 1. SERVIDOR FLASK (Para mantener Render despierto 24/7)
 # ==========================================
-TELEGRAM_TOKEN = "8904618394:AAHovRZSl_UdzLrgZ9ifCWNEksp5yMtHrew"
-TELEGRAM_CHAT_ID = "1881139096"
+app = Flask(__name__)
 
-def enviar_telegram(mensaje: str):
-    """Envía un mensaje usando el proxy de PythonAnywhere."""
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+@app.route('/')
+def home():
+    return "🤖 Bot Multi-Mercado Unificado (ES, NQ, CL) Activo en Render", 200
+
+def ejecutar_servidor_web():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+# ==========================================
+# 2. CONFIGURACIÓN Y CREDENCIALES
+# ==========================================
+INTERVALO = "5m"
+TEMPORALIDAD_DATOS = "5d"
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8904618394:AAHovRZSl_UdzLrgZ9ifCWNEksp5yMtHrew")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "1881139096")
+
+def enviar_mensaje_telegram(mensaje: str):
+    """Envía alertas directamente a Telegram."""
+    if not TELEGRAM_BOT_TOKEN:
+        print(f"[ALERTA LOCAL]: {mensaje}")
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": mensaje,
         "parse_mode": "Markdown"
     }
-    proxies = {
-        'http': 'http://proxy.server:3128',
-        'https': 'http://proxy.server:3128',
-    }
     try:
-        response = requests.post(url, data=payload, proxies=proxies, timeout=10)
-        if response.status_code != 200:
-            print(f"❌ Error enviando a Telegram: {response.text}")
+        response = requests.post(url, json=payload, timeout=10)
+        response.raise_for_status()
     except Exception as e:
-        print(f"❌ Excepción al conectar con Telegram: {e}")
+        print(f"Error al enviar mensaje a Telegram: {e}")
 
 # ==========================================
-# CÁLCULO DE INDICADORES TÉCNICOS NATIVOS
+# 3. ESTRATEGIA 1: ES y NQ (Cruces de EMA 200)
 # ==========================================
-def calcular_indicadores(df: pd.DataFrame) -> pd.DataFrame:
-    # 1. EMA 20
+def analizar_es_nq(ticker: str):
+    nombre_activo = "S&P 500 (ES)" if ticker == "ES=F" else "NASDAQ (NQ)"
+    print(f"Analizando {nombre_activo} (EMA 200)...")
+    
+    df = yf.download(tickers=ticker, period=TEMPORALIDAD_DATOS, interval=INTERVALO, progress=False)
+    if df.empty or len(df) < 200:
+        return
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
+
+    precio_cierre_anterior = float(df['Close'].iloc[-3])
+    ema_anterior = float(df['EMA_200'].iloc[-3])
+
+    precio_cierre_actual = float(df['Close'].iloc[-2])
+    ema_actual = float(df['EMA_200'].iloc[-2])
+
+    # Cruce Alcista
+    if precio_cierre_anterior < ema_anterior and precio_cierre_actual > ema_actual:
+        msg = (
+            f"🚀 *¡CRUCE ALCISTA EMA 200 (COMPRA)!*\n\n"
+            f"• *Activo:* {nombre_activo} (`{ticker}`)\n"
+            f"• *Precio Cierre:* `${precio_cierre_actual:.2f}`\n"
+            f"• *EMA 200:* `${ema_actual:.2f}`"
+        )
+        enviar_mensaje_telegram(msg)
+
+    # Cruce Bajista
+    elif precio_cierre_anterior > ema_anterior and precio_cierre_actual < ema_actual:
+        msg = (
+            f"🔻 *¡CRUCE BAJISTA EMA 200 (VENTA)!*\n\n"
+            f"• *Activo:* {nombre_activo} (`{ticker}`)\n"
+            f"• *Precio Cierre:* `${precio_cierre_actual:.2f}`\n"
+            f"• *EMA 200:* `${ema_actual:.2f}`"
+        )
+        enviar_mensaje_telegram(msg)
+
+# ==========================================
+# 4. ESTRATEGIA 2: PETRÓLEO CL (Bollinger + RSI + EMA20 + ATR)
+# ==========================================
+def calcular_indicadores_cl(df: pd.DataFrame) -> pd.DataFrame:
     df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
 
-    # 2. RSI 14
+    # RSI 14
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df['rsi'] = 100 - (100 / (1 + rs))
 
-    # 3. Bollinger Bands (20, 2.0)
+    # Bollinger Bands
     df['bbm'] = df['close'].rolling(window=20).mean()
     std = df['close'].rolling(window=20).std()
     df['bbu'] = df['bbm'] + (std * 2.0)
     df['bbl'] = df['bbm'] - (std * 2.0)
 
-    # 4. ATR 14
+    # ATR 14
     high_low = df['high'] - df['low']
     high_cp = (df['high'] - df['close'].shift()).abs()
     low_cp = (df['low'] - df['close'].shift()).abs()
@@ -62,23 +116,17 @@ def calcular_indicadores(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
-def analizar_y_notificar(symbol: str = "CL=F"):
-    try:
-        df = yf.download(tickers=symbol, period="5d", interval="5m", progress=False)
-    except Exception as e:
-        print(f"Error descargando datos: {e}")
-        return
-
-    if df.empty:
-        print("No se recibieron datos de mercado.")
+def analizar_cl():
+    print("Analizando PETRÓLEO (CL) con estrategia de Bollinger + RSI...")
+    df = yf.download(tickers="CL=F", period=TEMPORALIDAD_DATOS, interval=INTERVALO, progress=False)
+    if df.empty or len(df) < 20:
         return
 
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
     df.columns = [col.lower() for col in df.columns]
-
-    df = calcular_indicadores(df)
+    df = calcular_indicadores_cl(df)
 
     precio_actual = float(df['close'].iloc[-1])
     rsi_actual = float(df['rsi'].iloc[-1])
@@ -88,48 +136,59 @@ def analizar_y_notificar(symbol: str = "CL=F"):
     bb_middle = float(df['bbm'].iloc[-1])
     bb_upper = float(df['bbu'].iloc[-1])
 
-    hora_actual = df.index[-1]
-    print(f"[{hora_actual}] Evaluando 5m... Precio: ${precio_actual:.2f} | RSI: {rsi_actual:.1f} | EMA20: ${ema_actual:.2f}")
-
-    # CONDICIÓN 1: COMPRA (LONG)
+    # Condición de COMPRA en CL
     if precio_actual <= bb_lower and rsi_actual < 32 and precio_actual > ema_actual:
         sl = precio_actual - (1.2 * atr_actual)
         tp = bb_middle
         msg = (
             f"🚀 *¡ALERTA DE COMPRA EN PETRÓLEO (CL - 5M)!*\n\n"
-            f"• *Entrada:* ${precio_actual:.2f}\n"
-            f"• *Take Profit:* ${tp:.2f}\n"
-            f"• *Stop Loss:* ${sl:.2f}\n"
-            f"• *RSI:* {rsi_actual:.2f}\n"
-            f"• *EMA 20:* ${ema_actual:.2f}"
+            f"• *Entrada:* `${precio_actual:.2f}`\n"
+            f"• *Take Profit:* `${tp:.2f}`\n"
+            f"• *Stop Loss:* `${sl:.2f}`\n"
+            f"• *RSI:* `{rsi_actual:.2f}`\n"
+            f"• *EMA 20:* `${ema_actual:.2f}`"
         )
-        print(">>> Disparador alcanzado: Enviando señal de COMPRA a Telegram...")
-        enviar_telegram(msg)
+        enviar_mensaje_telegram(msg)
 
-    # CONDICIÓN 2: VENTA (SHORT)
+    # Condición de VENTA en CL
     elif precio_actual >= bb_upper and rsi_actual > 68 and precio_actual < ema_actual:
         sl = precio_actual + (1.2 * atr_actual)
         tp = bb_middle
         msg = (
-            f"🔻 *¡ALERTA DE VENTA EN PETRÓLEO (CL - 5M)!*\n\n"
-            f"• *Entrada:* ${precio_actual:.2f}\n"
-            f"• *Take Profit:* ${tp:.2f}\n"
-            f"• *Stop Loss:* ${sl:.2f}\n"
-            f"• *RSI:* {rsi_actual:.2f}\n"
-            f"• *EMA 20:* ${ema_actual:.2f}"
+            f"🔻 *¡ALERTA VENTA PETRÓLEO (CL)!*\n\n"
+            f"• *Entrada:* `${precio_actual:.2f}`\n"
+            f"• *Take Profit:* `${tp:.2f}`\n"
+            f"• *Stop Loss:* `${sl:.2f}`\n"
+            f"• *RSI:* `{rsi_actual:.2f}`\n"
+            f"• *EMA 20:* `${ema_actual:.2f}`"
         )
-        print(">>> Disparador alcanzado: Enviando señal de VENTA a Telegram...")
-        enviar_telegram(msg)
+        enviar_mensaje_telegram(msg)
 
 # ==========================================
-# BUCLE CONTINUO
+# 5. BUCLE GENERAL DE MONITOREO
+# ==========================================
+def bucle_monitoreo():
+    enviar_mensaje_telegram("🤖 *Bot Multi-Estrategia Iniciado en Render (ES/NQ: EMA200 | CL: Bollinger+RSI)*")
+    while True:
+        try:
+            # 1. Ejecuta estrategia EMA 200 en ES y NQ
+            analizar_es_nq("ES=F")
+            analizar_es_nq("NQ=F")
+
+            # 2. Ejecuta estrategia de Reversión en Petróleo (CL)
+            analizar_cl()
+
+            time.sleep(60) # Revisa cada minuto
+        except Exception as e:
+            print(f"Error en bucle de trading: {e}")
+            time.sleep(30)
+
+# ==========================================
+# 6. INICIO EN PARALELO
 # ==========================================
 if __name__ == "__main__":
-    print("🤖 Bot de Trading de Petróleo (CL) Activado.")
-    print("Enviando mensaje de prueba a Telegram...")
-    
-    enviar_telegram("🤖 *Bot de Trading CL Activado en PythonAnywhere.*\nEscuchando el mercado cada 5 minutos...")
-    
-    while True:
-        analizar_y_notificar()
-        time.sleep(300)
+    hilo_bot = threading.Thread(target=bucle_monitoreo)
+    hilo_bot.daemon = True
+    hilo_bot.start()
+
+    ejecutar_servidor_web()

@@ -1,26 +1,37 @@
 import os
 import time
+import threading
 import requests
 import pandas as pd
 import yfinance as yf
+from flask import Flask
 
 # ==========================================
-# 1. CONFIGURACIÓN INICIAL Y CREDENCIALES
+# 1. SERVIDOR FLASK (Para Render / Health Check)
 # ==========================================
-# Activos a monitorear (E-mini S&P 500 y E-mini Nasdaq)
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖 Bot de Trading Activo 24/7 en Render", 200
+
+def ejecutar_servidor_web():
+    # Render asigna dinámicamente un puerto en la variable PORT
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+# ==========================================
+# 2. CONFIGURACIÓN INICIAL Y CREDENCIALES
+# ==========================================
 TICKERS = ["ES=F", "NQ=F"]
-
-# Periodo de tiempo y temporalidad de velas
 INTERVALO = "4h"
 TEMPORALIDAD_DATOS = "60d"
 
-# Lee desde las Variables de Entorno de Render/Servidor.
-# Si no existen en el entorno, usa tus credenciales como respaldo (fallback).
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8904618394:AAHovRZSl_UdzLrgZ9ifCWNEksp5yMtHrew")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "1881139096")
 
 # ==========================================
-# 2. FUNCIONES BÁSICAS
+# 3. FUNCIONES BÁSICAS DE TRADING
 # ==========================================
 def enviar_mensaje_telegram(mensaje: str):
     """Envía un mensaje de alerta a tu chat de Telegram."""
@@ -85,13 +96,9 @@ def analizar_cruce(ticker: str):
     else:
         print(f"Sin cruce en {ticker}. Precio: {precio_cierre_actual:.2f} | EMA 200: {ema_actual:.2f}")
 
-# ==========================================
-# 3. BUCLE PRINCIPAL DE EJECUCIÓN
-# ==========================================
-if __name__ == "__main__":
-    enviar_mensaje_telegram("🤖 *Bot de Trading Iniciado Correctamente*")
-    
-    # Bucle de monitoreo cada 15 minutos (900 segundos)
+def bucle_monitoreo():
+    """Bucle infinito que ejecuta el análisis de trading cada 15 min."""
+    enviar_mensaje_telegram("🤖 *Bot de Trading Iniciado Correctamente con Servidor Web*")
     SEGUNDOS_ESPERA = 900 
     
     while True:
@@ -100,9 +107,18 @@ if __name__ == "__main__":
                 analizar_cruce(ticker)
             print(f"Esperando {SEGUNDOS_ESPERA // 60} minutos para el siguiente análisis...\n")
             time.sleep(SEGUNDOS_ESPERA)
-        except KeyboardInterrupt:
-            print("\nBot detenido manualmente por el usuario.")
-            break
         except Exception as e:
             print(f"Error inesperado en el ciclo: {e}")
             time.sleep(60)
+
+# ==========================================
+# 4. EJECUCIÓN EN PARALELO
+# ==========================================
+if __name__ == "__main__":
+    # Lanza el bot de trading en un hilo en segundo plano (daemon thread)
+    hilo_bot = threading.Thread(target=bucle_monitoreo)
+    hilo_bot.daemon = True
+    hilo_bot.start()
+
+    # Ejecuta el servidor Flask en el hilo principal (lo que busca Render)
+    ejecutar_servidor_web()
